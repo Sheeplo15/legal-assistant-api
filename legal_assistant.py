@@ -164,27 +164,10 @@ def create_and_search_vector_store(text_content: str, question: str) -> str | No
 
 def generate_answer_with_gemini(context: str, question: str, country: str) -> str:
     print(f"✍️  Étape 4 : Génération de la réponse finale...")
-    if not context: 
-        return "La source officielle a été analysée, mais aucun passage pertinent n'a pu être identifié pour répondre à cette question."
-    
+    if not context: return "La source officielle a été analysée, mais aucun passage pertinent n'a pu être identifié pour répondre à cette question."
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        prompt = f"""
-        Tu es un assistant juridique factuel et méticuleux. Ta seule et unique mission est de répondre à la question de l'utilisateur en utilisant **uniquement et strictement** les informations contenues dans le CONTEXTE fourni ci-dessous.
-
-        Il t'est **formellement interdit** d'utiliser tes connaissances générales, de faire des suppositions ou d'extrapoler.
-
-        **Instructions précises :**
-        1.  Lis la question : "{question}" (pour le pays : {country}).
-        2.  Lis le CONTEXTE fourni.
-        3.  Si le CONTEXTE contient une réponse directe et spécifique à la question, formule une réponse claire et structurée en te basant uniquement sur ces informations.
-        4.  Si le CONTEXTE ne contient PAS d'informations spécifiques permettant de répondre à la question, tu dois répondre **UNIQUEMENT** avec la phrase suivante, et rien d'autre : "Le document source a été analysé, mais il ne contient pas d'informations spécifiques permettant de répondre à la question posée."
-
-        --- CONTEXTE ---
-        {context}
-        --- FIN DU CONTEXTE ---
-        """
+        prompt = f"""Tu es un assistant juridique factuel et méticuleux. Ta seule et unique mission est de répondre à la question de l'utilisateur en utilisant **uniquement et strictement** les informations contenues dans le CONTEXTE fourni ci-dessous. Il t'est **formellement interdit** d'utiliser tes connaissances générales ou de faire des suppositions. **Instructions :** 1. Lis la question : "{question}" (pour le pays : {country}). 2. Lis le CONTEXTE. 3. Si le CONTEXTE contient une réponse directe, formule une réponse claire basée uniquement sur ces informations. 4. Si le CONTEXTE ne contient PAS d'informations spécifiques, réponds **UNIQUEMENT** avec la phrase suivante : "Le document source a été analysé, mais il ne contient pas d'informations spécifiques permettant de répondre à la question posée.". --- CONTEXTE --- {context} --- FIN DU CONTEXTE ---"""
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
