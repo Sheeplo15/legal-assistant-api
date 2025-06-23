@@ -25,7 +25,6 @@ GOVERNMENT_SITES_DATABASE = {
     "Sénégal": [".gouv.sn", "service-public.gouv.sn", "dgi.gouv.sn", "impotsetdomaines.gouv.sn"]
 }
 
-
 # --- DÉFINITION DE L’APPLICATION ---
 app = FastAPI()
 
@@ -49,7 +48,6 @@ class AnswerResponse(BaseModel):
     source_url: str | None
 
 # --- FONCTIONS ---
-
 def get_contextual_query(question: str, country: str) -> str:
     print(f"🌍 Adaptation de la requête pour le pays : {country}")
     try:
@@ -90,7 +88,6 @@ def search_for_official_sites(question: str, country: str) -> str | None:
                 print(f"✅ Source officielle trouvée : {link}")
                 return link
 
-        # Si aucun lien officiel, retour par défaut
         for r in results['organic']:
             link = r['link']
             if not any(u in link for u in unwanted):
@@ -187,3 +184,39 @@ async def get_legal_answer_endpoint(request: QueryRequest):
     final_answer = generate_answer_with_gemini(scraped_content, user_question, user_country)
 
     return AnswerResponse(answer=final_answer, source_url=source_url)
+
+# --- EXTRACTION DU CONTEXTE PERTINENT ---
+def find_relevant_context_in_text(full_text: str, question: str) -> str | None:
+    """
+    Utilise Gemini pour extraire les passages les plus pertinents d'un long texte.
+    C'est la première étape de notre RAG.
+    """
+    if not full_text: return None
+    print("🧠 Recherche des passages pertinents dans le document long...")
+    try:
+        # --- NOUVELLE LIGNE DE NETTOYAGE ---
+        # On s'assure que le texte est "propre" en remplaçant les caractères invalides.
+        clean_text = full_text.encode('utf-8', 'replace').decode('utf-8')
+        # -----------------------------------
+
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        prompt = f"""
+        Tu es un assistant de recherche juridique. À partir du texte complet fourni ci-dessous, 
+        extrais et retourne UNIQUEMENT les quelques paragraphes, articles ou sections les plus pertinents 
+        pour répondre à la question suivante : "{question}".
+
+        Ne formule pas de réponse. Ne résume pas. Extrais simplement le texte brut pertinent.
+        Si aucun passage ne semble pertinent, retourne une réponse vide.
+
+        --- DÉBUT DU TEXTE COMPLET ---
+        {clean_text[:40000]} 
+        --- FIN DU TEXTE COMPLET ---
+        """ 
+
+        response = model.generate_content(prompt)
+        print("✅ Passages pertinents extraits.")
+        return response.text
+    except Exception as e:
+        print(f"Erreur lors de la recherche de contexte : {e}")
+        return None
