@@ -1,7 +1,6 @@
 # ==============================================================================
-# ASSISTANT JURIDIQUE IA - VERSION "EXPERT-PRUDENT"
+# ASSISTANT JURIDIQUE IA - VERSION FINALE "AGENT STRATÈGE" (CORRIGÉE)
 # ==============================================================================
-
 import os
 import requests
 import json
@@ -24,160 +23,165 @@ SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 
 GOVERNMENT_SITES_DATABASE = {
-    "France": [".gouv.fr", "service-public.fr", "legifrance.gouv.fr"],
-    "Gabon": [".gouv.ga", "dgi.ga", "pme.gouv.ga", "anpigabon.com"],
-    "USA": [".gov"], "UK": [".gov.uk"], "Canada": [".gc.ca", ".ca/en/government"],
-    "Cameroun": [".cm", "impots.cm"],
+    "France": [".gouv.fr"], "Gabon": [".gouv.ga"], "USA": [".gov"], 
+    "UK": [".gov.uk"], "Canada": [".gc.ca"], "Cameroun": [".cm", "impots.cm"],
 }
 api_cache = {}
 
 # --- MODÈLES DE DONNÉES Pydantic ---
 class QueryRequest(BaseModel): question: str; country: str
 class AnswerResponse(BaseModel): answer: str; source_url: str | None
+class SearchPlan(BaseModel):
+    requires_search: bool
+    reasoning: str
+    search_queries: list[str]
+    target_domains: list[str]
 
 # --- INITIALISATION DE L'APPLICATION FastAPI ---
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
-# --- FONCTIONS LOGIQUES DE L'ASSISTANT ---
+# --- FONCTIONS LOGIQUES DE L'AGENT ---
 
-def get_contextual_query(question: str, country: str) -> str:
-    print(f"🌍 Étape 1/6 : Adaptation de la requête pour le pays : {country}...")
+def create_search_plan(question: str, country: str) -> SearchPlan:
+    print(f"🤔 Étape 0 : Réflexion stratégique pour '{question}' au '{country}'...")
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"""Tu es un expert en droit comparé. Traduis le concept de la question "{question}" dans le jargon juridique et fiscal le plus probable pour le pays '{country}' afin d'optimiser une recherche web. Ne retourne QUE la requête de recherche, sans aucune autre explication."""
+        prompt = f"""
+        Tu es un assistant de recherche juridique expert. Ta première tâche est de créer un plan de recherche structuré pour répondre à la question suivante : "{question}" pour le pays : "{country}".
+        1.  Analyse la question. Est-ce une question simple, factuelle que tu connais déjà (ex: capitale, monnaie) ou une question complexe nécessitant une recherche web ?
+        2.  Si la recherche n'est pas nécessaire, mets "requires_search" à false.
+        3.  Si la recherche est nécessaire, crée 2 à 3 requêtes de recherche Google optimisées. Pense aux termes juridiques et aux organismes officiels locaux (ex: ANPI pour l'investissement, DGI pour les impôts).
+        4.  Liste les domaines web cibles les plus probables pour ces recherches (ex: "anpi-gabon.com", "sante.gouv.ga").
+        
+        Réponds UNIQUEMENT avec un objet JSON au format suivant :
+        {{
+          "requires_search": true,
+          "reasoning": "La question est complexe et spécifique à la législation du pays, une recherche web ciblée est nécessaire pour garantir une réponse précise.",
+          "search_queries": ["statut juridique artisan boulanger {country}", "créer une entreprise de boulangerie ANPI {country}"],
+          "target_domains": ["anpi-gabon.com", "sante.gouv.ga", "dgi.ga"]
+        }}
+        """
         response = model.generate_content(prompt)
-        optimized_query = response.text.strip().replace('"', '')
-        print(f"   -> Requête optimisée : {optimized_query}")
-        return optimized_query
+        json_text = response.text.strip().replace("```json", "").replace("```", "")
+        plan_data = json.loads(json_text)
+        plan = SearchPlan(**plan_data)
+        print(f"   -> ✅ Plan de recherche créé. Requête : '{plan.search_queries[0]}'")
+        return plan
+        
     except Exception as e:
-        print(f"   -> Erreur lors de l'optimisation : {e}")
-        return question
+        print(f"   -> ❌ Erreur durant la réflexion stratégique : {e}. Utilisation d'un plan par défaut.")
+        return SearchPlan(
+            requires_search=True,
+            reasoning="Le plan stratégique a échoué, utilisation d'une recherche par défaut.",
+            search_queries=[question],
+            target_domains=[]
+        )
 
-def search_for_official_sites(question: str, country: str) -> str | None:
-    print(f"🔎 Étape 2/6 : Recherche d'un site officiel pour : '{question}'...")
-    url = "https://google.serper.dev/search"
-    payload = json.dumps({"q": question, "num": 5})
-    headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
-    try:
-        response = requests.post(url, headers=headers, data=payload, timeout=10)
-        response.raise_for_status()
-        results = response.json().get('organic', [])
-        if not results:
-            print("   -> ❌ Aucun résultat organique renvoyé par Serper.")
-            return None
-        
-        official_keywords = GOVERNMENT_SITES_DATABASE.get(country, ['.gov', '.gouv', 'go.'])
-        unwanted_keywords = ['facebook.com', 'youtube.com', 'twitter.com', 'linkedin.com', 'wikipedia.org']
-        
-        print("   -> 🔬 Analyse stricte des résultats pour trouver une source officielle...")
-        for result in results:
-            link, title = result['link'], result['title'].lower()
-            if any(unwanted in link for unwanted in unwanted_keywords):
-                continue
-            if any(official in link for official in official_keywords) or any(official in title for official in official_keywords):
-                print(f"   -> ✅ Source officielle identifiée : {link}")
-                return link
-        
-        # Si la boucle se termine sans avoir trouvé de lien fiable, on abandonne.
-        print("   -> ❌ Aucune source jugée suffisamment fiable n'a été trouvée dans les premiers résultats.")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"   -> Erreur lors de la recherche : {e}")
-        return None
+def search_for_official_sites(queries: list[str], country: str, target_domains: list[str]) -> str | None:
+    print(f"🔎 Étape 1 : Exécution du plan de recherche...")
+    for query in queries:
+        print(f"   -> Tentative avec la requête : '{query}'")
+        url = "https://google.serper.dev/search"
+        payload = json.dumps({"q": query, "num": 5})
+        headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+        try:
+            response = requests.post(url, headers=headers, data=payload, timeout=10)
+            response.raise_for_status()
+            results = response.json().get('organic', [])
+            if not results: continue
+
+            official_keywords = GOVERNMENT_SITES_DATABASE.get(country, []) + target_domains
+            unwanted_keywords = ['facebook.com', 'youtube.com', 'wikipedia.org']
+            
+            # Priorité 1 : Un lien qui correspond aux domaines cibles
+            for result in results:
+                if any(domain in result['link'] for domain in official_keywords):
+                    print(f"   -> ✅ Source prioritaire trouvée : {result['link']}")
+                    return result['link']
+
+            # Priorité 2 : Le premier résultat non-indésirable
+            for result in results:
+                if not any(unwanted in result['link'] for unwanted in unwanted_keywords):
+                    print(f"   -> ⚠️ Source de repli trouvée : {result['link']}")
+                    return result['link']
+        except Exception as e:
+            print(f"   -> ❌ Erreur lors de la tentative avec la requête '{query}': {e}")
+            continue
+    
+    print("   -> ❌ Aucune source fiable trouvée après toutes les tentatives.")
+    return None
 
 def scrape_content(source_url: str) -> str | None:
-    print(f"📄 Étape 3/6 : Extraction du contenu de la source...")
+    print(f"📄 Étape 2 : Extraction du contenu de la source...")
     if not source_url: return None
     try:
         if source_url.lower().endswith('.pdf'):
             response = requests.get(source_url, timeout=30)
             response.raise_for_status()
-            pdf_file = io.BytesIO(response.content)
-            reader = PdfReader(pdf_file)
+            reader = PdfReader(io.BytesIO(response.content))
             return "".join(page.extract_text() for page in reader.pages if page.extract_text())
         else:
-            app_firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
-            return app_firecrawl.scrape_url(source_url).markdown
+            return FirecrawlApp(api_key=FIRECRAWL_API_KEY).scrape_url(source_url).markdown
     except Exception as e:
-        print(f"   -> Erreur lors du scraping : {e}")
+        print(f"   -> ❌ Erreur lors du scraping : {e}")
         return None
 
-def get_relevant_keywords_from_doc(text_content: str, base_question: str, country: str) -> str:
-    print(f"🧠 Étape 4/6 : Apprentissage du jargon local pour '{country}'...")
-    if not text_content: return ""
-    try:
-        clean_text = text_content.encode('utf-8', 'replace').decode('utf-8')
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"""Analyse cet extrait de document juridique du pays '{country}'. Ma question porte sur : "{base_question}". Identifie les 3 à 5 termes ou expressions officielles les plus importants DANS CE TEXTE qui correspondent à ce concept. Ne retourne qu'une liste de termes séparés par des virgules. Si tu ne trouves rien, ne retourne rien. --- EXTRAIT --- {clean_text[:40000]}"""
-        response = model.generate_content(prompt)
-        keywords = response.text.strip()
-        if keywords:
-            print(f"   -> ✅ Mots-clés locaux identifiés : '{keywords}'")
-            return keywords
-        else:
-            print("   -> ⚠️ Aucune terminologie locale spécifique trouvée.")
-            return ""
-    except Exception as e:
-        print(f"   -> ❌ Erreur lors de l'apprentissage du jargon : {e}")
-        return ""
-
-def create_and_search_vector_store(text_content: str, enriched_question: str) -> str | None:
-    print(f"🎯 Étape 5/6 : Recherche sémantique dans le document...")
+def create_and_search_vector_store(text_content: str, question: str) -> str | None:
+    print(f"🎯 Étape 3 : Recherche sémantique dans le document...")
     if not text_content: return None
     try:
         chunks = [chunk for chunk in text_content.split('\n\n') if len(chunk.strip()) > 100]
         if not chunks: return None
-        print(f"   -> Document découpé en {len(chunks)} morceaux.")
 
         embedding_model = 'models/text-embedding-004'
         chunk_embeddings = []
         for i in range(0, len(chunks), 100):
             batch = chunks[i:i+100]
-            response = genai.embed_content(model=embedding_model, content=batch, task_type="RETRIEVAL_DOCUMENT", title="Texte de loi et obligations fiscales")
+            response = genai.embed_content(model=embedding_model, content=batch, task_type="RETRIEVAL_DOCUMENT")
             chunk_embeddings.extend(response['embedding'])
-            if len(chunks) > 100: time.sleep(1)
+            if len(chunks) > 100: time.sleep(1.1)
 
-        question_embedding = genai.embed_content(model=embedding_model, content=enriched_question, task_type="RETRIEVAL_QUERY")['embedding']
+        question_embedding = genai.embed_content(model=embedding_model, content=question, task_type="RETRIEVAL_QUERY")['embedding']
         dot_products = np.dot(np.array(chunk_embeddings), question_embedding)
         top_k_indices = np.argsort(dot_products)[-4:][::-1]
         
         relevant_context = "\n---\n".join([chunks[i] for i in top_k_indices])
-        print("   -> ✅ Contexte pertinent assemblé.")
         return relevant_context
     except Exception as e:
         print(f"   -> ❌ Erreur lors de la recherche vectorielle : {e}")
         return None
 
 def generate_answer_with_gemini(context: str, question: str, country: str) -> str:
-    print(f"✍️  Étape 6/6 : Génération de la réponse finale...")
-    if not context: return "La source officielle a été analysée, mais aucun passage pertinent n'a pu être identifié pour répondre à cette question. Le document ne traite peut-être pas de ce sujet spécifique."
+    print(f"✍️  Étape 4 : Génération de la réponse finale...")
+    if not context: return "La source officielle a été analysée, mais aucun passage pertinent n'a pu être identifié pour répondre à cette question."
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"""Tu es un assistant juridique IA. Ta mission est de répondre précisément à la question de l'utilisateur en te basant EXCLUSIVEMENT sur le contexte fourni. Contexte : --- {context} ---. Question : "{question}". Pays concerné : {country}. Formule une réponse claire et structurée. Si le contexte ne permet pas de répondre, indique-le clairement."""
+        prompt = f"""Tu es un assistant juridique IA. Réponds précisément à la question en te basant EXCLUSIVEMENT sur le contexte fourni. Contexte: --- {context} ---. Question: "{question}". Pays: {country}. Formule une réponse claire et structurée."""
         response = model.generate_content(prompt)
-        print("   -> ✅ Réponse finale générée.")
         return response.text
     except Exception as e:
-        print(f"   -> Erreur lors de la génération finale : {e}")
+        print(f"   -> ❌ Erreur lors de la génération finale : {e}")
         return "Une erreur est survenue lors de la génération de la réponse finale."
 
-# --- POINT D'ENTRÉE PRINCIPAL DE L'API ---
 @app.post("/process_query", response_model=AnswerResponse)
 async def get_legal_answer_endpoint(request: QueryRequest):
     user_question = request.question
     user_country = request.country
     cache_key = f"{user_country.lower()}:{user_question.lower()}"
-    
     if cache_key in api_cache:
         print("✅ Réponse trouvée dans le cache ! Renvoi instantané.")
         return api_cache[cache_key]
 
     print("-" * 50); print(f"Requête reçue | Pays : {user_country} | Question : {user_question}"); print("-" * 50)
     
-    search_query = get_contextual_query(user_question, user_country)
-    source_url = search_for_official_sites(search_query, user_country)
+    plan = create_search_plan(user_question, user_country)
+
+    if not plan.requires_search:
+        return AnswerResponse(answer=plan.reasoning, source_url=None)
+
+    source_url = search_for_official_sites(plan.search_queries, user_country, plan.target_domains)
     
     if not source_url:
         return AnswerResponse(answer="Impossible de trouver une source officielle fiable pour cette question.", source_url=None)
@@ -185,11 +189,8 @@ async def get_legal_answer_endpoint(request: QueryRequest):
     scraped_content = scrape_content(source_url)
     if not scraped_content:
         return AnswerResponse(answer="Impossible de récupérer le contenu de la source officielle trouvée.", source_url=source_url)
-
-    local_keywords = get_relevant_keywords_from_doc(scraped_content, user_question, user_country)
-    enriched_question = f"{user_question} - Termes pertinents à considérer : {local_keywords}"
     
-    refined_context = create_and_search_vector_store(scraped_content, enriched_question)
+    refined_context = create_and_search_vector_store(scraped_content, user_question)
     final_answer = generate_answer_with_gemini(refined_context, user_question, user_country)
     
     response_to_send = AnswerResponse(answer=final_answer, source_url=source_url)
