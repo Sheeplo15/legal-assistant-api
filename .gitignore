@@ -1,0 +1,6 @@
+# Fichier de secrets à ignorer
+.env
+
+# Dossiers temporaires de Python
+__pycache__/
+*.pyc
