@@ -1,5 +1,5 @@
 # ==============================================================================
-# ASSISTANT JURIDIQUE IA - VERSION FINALE "AGENT STRATÈGE" (CORRIGÉE)
+# ASSISTANT JURIDIQUE IA - VERSION "EXPERT-PRUDENT"
 # ==============================================================================
 import os
 import requests
@@ -49,18 +49,18 @@ def create_search_plan(question: str, country: str) -> SearchPlan:
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
-        Tu es un assistant de recherche juridique expert. Ta première tâche est de créer un plan de recherche structuré pour répondre à la question suivante : "{question}" pour le pays : "{country}".
-        1.  Analyse la question. Est-ce une question simple, factuelle que tu connais déjà (ex: capitale, monnaie) ou une question complexe nécessitant une recherche web ?
+        Tu es un assistant de recherche juridique expert. Crée un plan de recherche structuré pour la question: "{question}" pour le pays: "{country}".
+        1.  Analyse la question. Est-ce une question simple (ex: capitale) ou complexe nécessitant une recherche web?
         2.  Si la recherche n'est pas nécessaire, mets "requires_search" à false.
-        3.  Si la recherche est nécessaire, crée 2 à 3 requêtes de recherche Google optimisées. Pense aux termes juridiques et aux organismes officiels locaux (ex: ANPI pour l'investissement, DGI pour les impôts).
-        4.  Liste les domaines web cibles les plus probables pour ces recherches (ex: "anpi-gabon.com", "sante.gouv.ga").
+        3.  Si la recherche est nécessaire, crée 2-3 requêtes Google optimisées avec des termes juridiques locaux.
+        4.  Liste les domaines web cibles les plus probables (ex: "anpi-gabon.com", "sante.gouv.ga").
         
         Réponds UNIQUEMENT avec un objet JSON au format suivant :
         {{
-          "requires_search": true,
-          "reasoning": "La question est complexe et spécifique à la législation du pays, une recherche web ciblée est nécessaire pour garantir une réponse précise.",
-          "search_queries": ["statut juridique artisan boulanger {country}", "créer une entreprise de boulangerie ANPI {country}"],
-          "target_domains": ["anpi-gabon.com", "sante.gouv.ga", "dgi.ga"]
+          "requires_search": boolean,
+          "reasoning": "string",
+          "search_queries": ["string"],
+          "target_domains": ["string"]
         }}
         """
         response = model.generate_content(prompt)
@@ -92,25 +92,22 @@ def search_for_official_sites(queries: list[str], country: str, target_domains: 
             results = response.json().get('organic', [])
             if not results: continue
 
+            unwanted_keywords = ['facebook.com', 'youtube.com', 'wikipedia.org', 'scribd.com', 'researchgate.net', 'twitter.com', 'linkedin.com']
             official_keywords = GOVERNMENT_SITES_DATABASE.get(country, []) + target_domains
-            unwanted_keywords = ['facebook.com', 'youtube.com', 'wikipedia.org']
             
-            # Priorité 1 : Un lien qui correspond aux domaines cibles
+            print("   -> 🔬 Analyse stricte des résultats...")
             for result in results:
-                if any(domain in result['link'] for domain in official_keywords):
-                    print(f"   -> ✅ Source prioritaire trouvée : {result['link']}")
-                    return result['link']
-
-            # Priorité 2 : Le premier résultat non-indésirable
-            for result in results:
-                if not any(unwanted in result['link'] for unwanted in unwanted_keywords):
-                    print(f"   -> ⚠️ Source de repli trouvée : {result['link']}")
-                    return result['link']
+                link, title = result['link'], result['title'].lower()
+                if any(unwanted in link for unwanted in unwanted_keywords):
+                    continue
+                if any(official in link for official in official_keywords):
+                    print(f"   -> ✅ Source officielle identifiée : {link}")
+                    return link
         except Exception as e:
             print(f"   -> ❌ Erreur lors de la tentative avec la requête '{query}': {e}")
             continue
-    
-    print("   -> ❌ Aucune source fiable trouvée après toutes les tentatives.")
+            
+    print("   -> ❌ Aucune source jugée suffisamment fiable n'a été trouvée après toutes les tentatives.")
     return None
 
 def scrape_content(source_url: str) -> str | None:
