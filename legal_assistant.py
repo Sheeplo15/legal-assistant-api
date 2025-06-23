@@ -1,5 +1,5 @@
 # ==============================================================================
-# ASSISTANT JURIDIQUE IA - VERSION FINALE "EXPERT" (RAG + APPRENTISSAGE)
+# ASSISTANT JURIDIQUE IA - VERSION "EXPERT-PRUDENT"
 # ==============================================================================
 
 import os
@@ -18,44 +18,26 @@ import numpy as np
 
 # --- CONFIGURATION & GLOBALS ---
 load_dotenv()
-
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-
 genai.configure(api_key=GEMINI_API_KEY)
 
 GOVERNMENT_SITES_DATABASE = {
     "France": [".gouv.fr", "service-public.fr", "legifrance.gouv.fr"],
     "Gabon": [".gouv.ga", "dgi.ga", "pme.gouv.ga", "anpigabon.com"],
-    "USA": [".gov"],
-    "UK": [".gov.uk"],
-    "Canada": [".gc.ca", ".ca/en/government"],
+    "USA": [".gov"], "UK": [".gov.uk"], "Canada": [".gc.ca", ".ca/en/government"],
     "Cameroun": [".cm", "impots.cm"],
 }
-
-# Cache en mémoire simple pour éviter les requêtes répétées et coûteuses
 api_cache = {}
 
-# --- MODÈLES DE DONNÉES Pydantic (contrat de l'API) ---
-class QueryRequest(BaseModel):
-    question: str
-    country: str
-
-class AnswerResponse(BaseModel):
-    answer: str
-    source_url: str | None
+# --- MODÈLES DE DONNÉES Pydantic ---
+class QueryRequest(BaseModel): question: str; country: str
+class AnswerResponse(BaseModel): answer: str; source_url: str | None
 
 # --- INITIALISATION DE L'APPLICATION FastAPI ---
 app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
 # --- FONCTIONS LOGIQUES DE L'ASSISTANT ---
@@ -89,19 +71,17 @@ def search_for_official_sites(question: str, country: str) -> str | None:
         official_keywords = GOVERNMENT_SITES_DATABASE.get(country, ['.gov', '.gouv', 'go.'])
         unwanted_keywords = ['facebook.com', 'youtube.com', 'twitter.com', 'linkedin.com', 'wikipedia.org']
         
-        print("   -> 🔬 Analyse des résultats pour trouver une source fiable...")
+        print("   -> 🔬 Analyse stricte des résultats pour trouver une source officielle...")
         for result in results:
             link, title = result['link'], result['title'].lower()
-            if any(unwanted in link for unwanted in unwanted_keywords): continue
+            if any(unwanted in link for unwanted in unwanted_keywords):
+                continue
             if any(official in link for official in official_keywords) or any(official in title for official in official_keywords):
                 print(f"   -> ✅ Source officielle identifiée : {link}")
                 return link
         
-        print("   -> ⚠️ Aucun site clairement officiel trouvé. Prise du premier résultat non-indésirable.")
-        for result in results:
-            if not any(unwanted in result['link'] for unwanted in unwanted_keywords):
-                print(f"   -> ✅ Pris par défaut (meilleur effort) : {result['link']}")
-                return result['link']
+        # Si la boucle se termine sans avoir trouvé de lien fiable, on abandonne.
+        print("   -> ❌ Aucune source jugée suffisamment fiable n'a été trouvée dans les premiers résultats.")
         return None
     except requests.exceptions.RequestException as e:
         print(f"   -> Erreur lors de la recherche : {e}")
@@ -112,24 +92,14 @@ def scrape_content(source_url: str) -> str | None:
     if not source_url: return None
     try:
         if source_url.lower().endswith('.pdf'):
-            print(f"   -> Détection d'un PDF. Utilisation du scraper de PDF...")
             response = requests.get(source_url, timeout=30)
             response.raise_for_status()
             pdf_file = io.BytesIO(response.content)
             reader = PdfReader(pdf_file)
-            content = "".join(page.extract_text() for page in reader.pages if page.extract_text())
+            return "".join(page.extract_text() for page in reader.pages if page.extract_text())
         else:
-            print(f"   -> Détection d'une page web. Utilisation de Firecrawl...")
             app_firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
-            scraped_data = app_firecrawl.scrape_url(source_url)
-            content = scraped_data.markdown
-
-        if content:
-            print("   -> ✅ Contenu extrait avec succès.")
-            return content
-        else:
-            print("   -> ❌ Le scraping n'a retourné aucun contenu.")
-            return None
+            return app_firecrawl.scrape_url(source_url).markdown
     except Exception as e:
         print(f"   -> Erreur lors du scraping : {e}")
         return None
@@ -140,7 +110,7 @@ def get_relevant_keywords_from_doc(text_content: str, base_question: str, countr
     try:
         clean_text = text_content.encode('utf-8', 'replace').decode('utf-8')
         model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"""Analyse cet extrait de document juridique du pays '{country}'. Ma question porte sur : "{base_question}". Identifie les 3 à 5 termes ou expressions officielles les plus importants DANS CE TEXTE qui correspondent à ce concept. Ne retourne qu'une liste de termes séparés par des virgules. Exemple : régime de l'entreprenant, impôt libératoire. Si tu ne trouves rien, ne retourne rien. --- EXTRAIT --- {clean_text[:40000]}"""
+        prompt = f"""Analyse cet extrait de document juridique du pays '{country}'. Ma question porte sur : "{base_question}". Identifie les 3 à 5 termes ou expressions officielles les plus importants DANS CE TEXTE qui correspondent à ce concept. Ne retourne qu'une liste de termes séparés par des virgules. Si tu ne trouves rien, ne retourne rien. --- EXTRAIT --- {clean_text[:40000]}"""
         response = model.generate_content(prompt)
         keywords = response.text.strip()
         if keywords:
@@ -169,8 +139,6 @@ def create_and_search_vector_store(text_content: str, enriched_question: str) ->
             chunk_embeddings.extend(response['embedding'])
             if len(chunks) > 100: time.sleep(1)
 
-        print("   -> Carte sémantique (Embeddings) créée.")
-        
         question_embedding = genai.embed_content(model=embedding_model, content=enriched_question, task_type="RETRIEVAL_QUERY")['embedding']
         dot_products = np.dot(np.array(chunk_embeddings), question_embedding)
         top_k_indices = np.argsort(dot_products)[-4:][::-1]
@@ -187,7 +155,7 @@ def generate_answer_with_gemini(context: str, question: str, country: str) -> st
     if not context: return "La source officielle a été analysée, mais aucun passage pertinent n'a pu être identifié pour répondre à cette question. Le document ne traite peut-être pas de ce sujet spécifique."
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"""Tu es un assistant juridique IA. Ta mission est de répondre précisément à la question de l'utilisateur en te basant EXCLUSIVEMENT sur le contexte fourni. Contexte : --- {context} ---. Question : "{question}". Pays concerné : {country}. Formule une réponse claire, structurée et professionnelle. Si le contexte ne permet pas de répondre, indique-le clairement."""
+        prompt = f"""Tu es un assistant juridique IA. Ta mission est de répondre précisément à la question de l'utilisateur en te basant EXCLUSIVEMENT sur le contexte fourni. Contexte : --- {context} ---. Question : "{question}". Pays concerné : {country}. Formule une réponse claire et structurée. Si le contexte ne permet pas de répondre, indique-le clairement."""
         response = model.generate_content(prompt)
         print("   -> ✅ Réponse finale générée.")
         return response.text
@@ -210,10 +178,13 @@ async def get_legal_answer_endpoint(request: QueryRequest):
     
     search_query = get_contextual_query(user_question, user_country)
     source_url = search_for_official_sites(search_query, user_country)
-    scraped_content = scrape_content(source_url)
     
+    if not source_url:
+        return AnswerResponse(answer="Impossible de trouver une source officielle fiable pour cette question.", source_url=None)
+
+    scraped_content = scrape_content(source_url)
     if not scraped_content:
-        return AnswerResponse(answer="Impossible de récupérer le contenu de la source officielle.", source_url=source_url)
+        return AnswerResponse(answer="Impossible de récupérer le contenu de la source officielle trouvée.", source_url=source_url)
 
     local_keywords = get_relevant_keywords_from_doc(scraped_content, user_question, user_country)
     enriched_question = f"{user_question} - Termes pertinents à considérer : {local_keywords}"
